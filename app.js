@@ -28,6 +28,16 @@ const state = {
   playbackSliceIndex: -1,
   animationFrame: 0,
   mapBounds: { left: 0, top: 0, width: 1, height: 1 },
+  mapSize: { width: 1, height: 1 },
+  lastTriggerAt: 0,
+  lastTriggerIndex: -1,
+  mapView: { zoom: 1, panX: 0, panY: 0 },
+  touchGesture: {
+    lastTapAt: 0,
+    lastCenter: null,
+    lastDistance: 0,
+    pinching: false,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -488,7 +498,7 @@ function frame() {
 }
 
 function colorFor(slice) {
-  return slice.rms < 0.018 ? themeColor("--line") : themeColor("--point");
+  return slice.rms < 0.018 ? themeColor("--text-soft") : themeColor("--point");
 }
 
 function drawAll() {
@@ -579,12 +589,15 @@ function drawMap() {
   ctx.clearRect(0, 0, width, height);
   const bleed = Math.max(28, Math.min(width, height) * 0.06);
   state.mapBounds = { left: -bleed, top: -bleed, width: width + bleed * 2, height: height + bleed * 2 };
+  state.mapSize = { width, height };
 
   if (!state.slices.length) {
     return;
   }
 
   for (const slice of state.slices) {
+    const p = pointToCanvas(slice);
+    if (p.x < -12 || p.x > width + 12 || p.y < -12 || p.y > height + 12) continue;
     drawPoint(ctx, slice, false);
   }
   const hover = state.slices[state.hover];
@@ -595,7 +608,8 @@ function drawMap() {
 
 function drawPoint(ctx, slice, active) {
   const p = pointToCanvas(slice);
-  const radius = 1.8 + Math.min(1.5, slice.rms * 10);
+  const viewBoost = isIOS() ? Math.min(0.9, state.mapView.zoom * 0.1) : 0;
+  const radius = (isIOS() ? 2.15 : 1.9) + viewBoost + Math.min(1.3, slice.rms * 8);
   ctx.fillStyle = slice.color;
   ctx.beginPath();
   ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
@@ -625,9 +639,17 @@ function drawPoint(ctx, slice, active) {
 
 function pointToCanvas(slice) {
   const b = state.mapBounds;
+  const rawX = b.left + slice.x * b.width;
+  const rawY = b.top + slice.y * b.height;
+  if (!isIOS()) {
+    return { x: rawX, y: rawY };
+  }
+  const centerX = state.mapSize.width * 0.5;
+  const centerY = state.mapSize.height * 0.5;
+  const view = state.mapView;
   return {
-    x: b.left + slice.x * b.width,
-    y: b.top + slice.y * b.height,
+    x: centerX + (rawX - centerX) * view.zoom + view.panX,
+    y: centerY + (rawY - centerY) * view.zoom + view.panY,
   };
 }
 
@@ -638,7 +660,8 @@ function canvasToLocal(canvas, event) {
 
 function nearestSlice(pos, radius = 13) {
   let best = -1;
-  let bestDist = radius * radius;
+  const touchRadius = isIOS() ? Math.max(radius, 26) : radius;
+  let bestDist = touchRadius * touchRadius;
   for (let i = 0; i < state.slices.length; i += 1) {
     const p = pointToCanvas(state.slices[i]);
     const dist = (p.x - pos.x) ** 2 + (p.y - pos.y) ** 2;
@@ -648,6 +671,23 @@ function nearestSlice(pos, radius = 13) {
     }
   }
   return best;
+}
+
+function clampMapView() {
+  const rect = els.mapCanvas.getBoundingClientRect();
+  const view = state.mapView;
+  view.zoom = clamp(view.zoom, 1, 10);
+  const maxX = rect.width * (view.zoom - 1) * 0.72;
+  const maxY = rect.height * (view.zoom - 1) * 0.72;
+  view.panX = clamp(view.panX, -maxX, maxX);
+  view.panY = clamp(view.panY, -maxY, maxY);
+}
+
+function resetMapView() {
+  state.mapView.zoom = 1;
+  state.mapView.panX = 0;
+  state.mapView.panY = 0;
+  drawMap();
 }
 
 function showTouchedSlice(index) {
@@ -685,7 +725,7 @@ function getGranularParams() {
   const scanDepth = lerp(0.08, 0.96, scan) * lerp(0.85, 1.55, macro);
   const cloudWidth = lerp(0.018, 0.42, clamp(macro * 0.58 + pitch * 0.48 + freeze * 0.42, 0, 1));
   const filterHz = lerp(900, 7600, tone) * lerp(1, 0.5, macro) * (freeze ? 0.62 : 1);
-  const grainGain = lerp(0.2, 0.072, clamp(overlap / 13.5, 0, 1));
+  const grainGain = lerp(0.32, 0.13, clamp(overlap / 13.5, 0, 1));
   return {
     cloudWidth,
     filterHz: clamp(filterHz, 650, 8500),
@@ -710,13 +750,13 @@ function createOutputChain(ctx) {
   const filter = ctx.createBiquadFilter();
   const compressor = ctx.createDynamicsCompressor();
   input.gain.setValueAtTime(0.0001, ctx.currentTime);
-  input.gain.exponentialRampToValueAtTime(0.78, ctx.currentTime + 0.035);
+  input.gain.exponentialRampToValueAtTime(1.05, ctx.currentTime + 0.035);
   filter.type = "lowpass";
   filter.frequency.setValueAtTime(5200, ctx.currentTime);
   filter.Q.setValueAtTime(0.42, ctx.currentTime);
-  compressor.threshold.setValueAtTime(-18, ctx.currentTime);
-  compressor.knee.setValueAtTime(18, ctx.currentTime);
-  compressor.ratio.setValueAtTime(3, ctx.currentTime);
+  compressor.threshold.setValueAtTime(-13, ctx.currentTime);
+  compressor.knee.setValueAtTime(20, ctx.currentTime);
+  compressor.ratio.setValueAtTime(3.8, ctx.currentTime);
   compressor.attack.setValueAtTime(0.012, ctx.currentTime);
   compressor.release.setValueAtTime(0.16, ctx.currentTime);
   input.connect(filter).connect(compressor).connect(ctx.destination);
@@ -732,7 +772,7 @@ function updateOutputTone(ctx, params) {
   state.outputFilter.frequency.cancelScheduledValues(now);
   state.outputFilter.frequency.setTargetAtTime(params.filterHz, now, 0.09);
   state.outputFilter.Q.setTargetAtTime(0.38 + params.tone * 0.28, now, 0.09);
-  state.outputGain.gain.setTargetAtTime(0.76, now, 0.04);
+  state.outputGain.gain.setTargetAtTime(1.08, now, 0.04);
 }
 
 function choosePitchRatio(voice, spread) {
@@ -1054,6 +1094,7 @@ for (const [input, output] of [
 els.granularMode.addEventListener("change", updateInfo);
 
 async function handleMapPointer(event, force = false) {
+  if (isIOS() && event.pointerType === "touch") return;
   event.preventDefault();
   primeAudioNow();
   await unlockAudio();
@@ -1062,10 +1103,20 @@ async function handleMapPointer(event, force = false) {
   if (force || index !== state.hover) {
     state.hover = index;
     drawMap();
-    if (index >= 0) playSlice(index);
+    if (index >= 0) maybePlaySlice(index, force);
     if (index < 0 && !els.loopSlice.checked) stopPlayback();
     showTouchedSlice(index);
   }
+}
+
+function maybePlaySlice(index, force = false) {
+  const now = performance.now();
+  const gap = isIOS() ? 105 : 55;
+  if (!force && index === state.lastTriggerIndex && now - state.lastTriggerAt < gap) return;
+  if (!force && now - state.lastTriggerAt < gap) return;
+  state.lastTriggerIndex = index;
+  state.lastTriggerAt = now;
+  playSlice(index);
 }
 
 els.mapCanvas.addEventListener("pointerdown", (event) => {
@@ -1085,6 +1136,99 @@ els.mapCanvas.addEventListener("pointerleave", () => {
   restoreStatus();
   drawMap();
 });
+
+function touchPoint(touch) {
+  const rect = els.mapCanvas.getBoundingClientRect();
+  return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+}
+
+function touchCenter(touches) {
+  const a = touchPoint(touches[0]);
+  const b = touchPoint(touches[1]);
+  return { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
+}
+
+function touchDistance(touches) {
+  const a = touchPoint(touches[0]);
+  const b = touchPoint(touches[1]);
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function handleIOSMapTouch(event) {
+  if (!isIOS()) return;
+  primeAudioNow();
+  const touches = event.touches;
+  if (touches.length >= 2) {
+    event.preventDefault();
+    const center = touchCenter(touches);
+    const distance = Math.max(1, touchDistance(touches));
+    const gesture = state.touchGesture;
+    if (!gesture.pinching || !gesture.lastCenter) {
+      gesture.pinching = true;
+      gesture.lastCenter = center;
+      gesture.lastDistance = distance;
+      return;
+    }
+    const rect = els.mapCanvas.getBoundingClientRect();
+    const view = state.mapView;
+    const oldZoom = view.zoom;
+    const pinchRatio = distance / Math.max(1, gesture.lastDistance);
+    const zoomFactor = Math.pow(pinchRatio, 1.75);
+    const nextZoom = clamp(oldZoom * zoomFactor, 1, 10);
+    const anchorX = center.x - rect.width * 0.5 - view.panX;
+    const anchorY = center.y - rect.height * 0.5 - view.panY;
+    view.panX += center.x - gesture.lastCenter.x - anchorX * (nextZoom / oldZoom - 1);
+    view.panY += center.y - gesture.lastCenter.y - anchorY * (nextZoom / oldZoom - 1);
+    view.zoom = nextZoom;
+    gesture.lastCenter = center;
+    gesture.lastDistance = distance;
+    clampMapView();
+    drawMap();
+    return;
+  }
+
+  if (touches.length === 1) {
+    const gesture = state.touchGesture;
+    gesture.pinching = false;
+    gesture.lastCenter = null;
+    gesture.lastDistance = 0;
+    const now = performance.now();
+    if (event.type === "touchstart" && now - gesture.lastTapAt < 280) {
+      event.preventDefault();
+      gesture.lastTapAt = 0;
+      resetMapView();
+      return;
+    }
+    if (event.type === "touchstart") gesture.lastTapAt = now;
+    const pos = touchPoint(touches[0]);
+    const index = nearestSlice(pos, 24);
+    if (index < 0) return;
+    event.preventDefault();
+    if (index !== state.hover || event.type === "touchstart") {
+      state.hover = index;
+      drawMap();
+      maybePlaySlice(index, event.type === "touchstart");
+      showTouchedSlice(index);
+    }
+  }
+}
+
+els.mapCanvas.addEventListener("touchstart", handleIOSMapTouch, { passive: false });
+els.mapCanvas.addEventListener("touchmove", handleIOSMapTouch, { passive: false });
+els.mapCanvas.addEventListener("touchend", (event) => {
+  if (!isIOS()) return;
+  if (event.touches.length < 2) {
+    state.touchGesture.pinching = false;
+    state.touchGesture.lastCenter = null;
+    state.touchGesture.lastDistance = 0;
+  }
+}, { passive: false });
+els.mapCanvas.addEventListener("touchcancel", (event) => {
+  if (!isIOS()) return;
+  state.touchGesture.pinching = false;
+  state.touchGesture.lastCenter = null;
+  state.touchGesture.lastDistance = 0;
+}, { passive: false });
 
 window.addEventListener("touchstart", unlockAudio, { passive: true });
 window.addEventListener("touchend", unlockAudio, { passive: true });
