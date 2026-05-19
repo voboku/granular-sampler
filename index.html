@@ -4,14 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Audio Map</title>
-    <link rel="stylesheet" href="styles.css?v=20260519-loop-fix-01" />
+    <link rel="stylesheet" href="styles.css?v=20260519-ios-audio-02" />
   </head>
   <body>
     <main class="shell">
       <section class="topbar" aria-label="Audio controls">
         <div class="transport">
           <label class="file-button">
-            <input id="fileInput" type="file" accept="audio/*" />
+            <input id="fileInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.aif,.aiff,.flac,.ogg" />
             <span>Load</span>
           </label>
           <button id="analyzeButton" type="button" disabled>Chop</button>
@@ -115,6 +115,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260519-loop-fix-01"></script>
+    <script src="app.js?v=20260519-ios-audio-02"></script>
   </body>
 </html>

@@ -19,6 +19,10 @@ const state = {
   outputGain: null,
   outputFilter: null,
   outputCompressor: null,
+  audioElement: null,
+  audioStopTimer: 0,
+  audioUrl: "",
+  audioUnlocked: false,
   playingId: -1,
   playbackStartedAt: 0,
   playbackSliceIndex: -1,
@@ -57,10 +61,14 @@ const els = {
   waveCanvas: $("waveCanvas"),
   mapCanvas: $("mapCanvas"),
 };
+els.fileButton = document.querySelector(".file-button");
 
 function getAudioContext() {
   if (!state.audioContext) {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      throw new Error("Web Audio is not available in this browser.");
+    }
     state.audioContext = new AudioContextClass();
   }
   return state.audioContext;
@@ -68,9 +76,57 @@ function getAudioContext() {
 
 async function unlockAudio() {
   const ctx = getAudioContext();
-  if (ctx.state === "suspended") {
-    await ctx.resume();
+  if (ctx.state === "suspended" || ctx.state === "interrupted") {
+    try {
+      await ctx.resume();
+    } catch {
+      // iOS may reject resume outside a direct gesture; the next touch will retry.
+    }
   }
+  if (!state.audioUnlocked && ctx.state === "running") {
+    try {
+      const source = ctx.createBufferSource();
+      const gain = ctx.createGain();
+      source.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+      gain.gain.value = 0.0001;
+      source.connect(gain).connect(ctx.destination);
+      source.start(0);
+      state.audioUnlocked = true;
+    } catch {
+      // A failed silent primer is harmless; real playback will still attempt to resume.
+    }
+  }
+}
+
+function primeAudioNow() {
+  let ctx;
+  try {
+    ctx = getAudioContext();
+  } catch {
+    return;
+  }
+  try {
+    ctx.resume?.();
+  } catch {
+    // iOS will retry from the next direct gesture.
+  }
+  try {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 220;
+    gain.gain.setValueAtTime(0.0008, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.035);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.04);
+    state.audioUnlocked = true;
+  } catch {
+    // Primer failure is non-fatal.
+  }
+}
+
+function isIOS() {
+  return /iPad|iPhone|iPod/u.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
 function setStatus(text) {
@@ -124,10 +180,16 @@ async function loadFile(file) {
   stopPlayback();
   const ctx = getAudioContext();
   const data = await file.arrayBuffer();
-  const buffer = await ctx.decodeAudioData(data);
+  const decodeData = data.slice(0);
+  const buffer = await ctx.decodeAudioData(decodeData);
   state.buffer = buffer;
   state.mono = mixToMono(buffer);
   state.fileName = file.name;
+  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+  state.audioUrl = URL.createObjectURL(file);
+  state.audioElement = new Audio(state.audioUrl);
+  state.audioElement.preload = "auto";
+  state.audioElement.playsInline = true;
   state.slices = [];
   state.hover = -1;
   state.waveHover = -1;
@@ -498,6 +560,11 @@ function getWaveActiveIndex() {
 }
 
 function getPlayheadX(slice, width) {
+  if (isIOS() && state.audioElement && state.playingId === slice.id && !els.granularMode.checked) {
+    const progress = slice.duration > 0 ? clamp((state.audioElement.currentTime - slice.startSec) / slice.duration, 0, 1) : 0;
+    const sample = slice.start + (slice.end - slice.start) * progress;
+    return sampleToWaveX(sample, width);
+  }
   if (state.playbackSliceIndex < 0 || state.playingId !== slice.id || !state.audioContext) {
     return sampleToWaveX(slice.start, width);
   }
@@ -694,15 +761,71 @@ function smoothValue(current, target, amount) {
   return current + (target - current) * amount;
 }
 
+async function playHtmlAudioSlice(slice) {
+  const audio = state.audioElement;
+  if (!audio) return false;
+  try {
+    if (state.audioStopTimer) {
+      clearTimeout(state.audioStopTimer);
+      state.audioStopTimer = 0;
+    }
+    audio.pause();
+    audio.currentTime = slice.startSec;
+    audio.volume = 0.95;
+    audio.loop = false;
+    const sliceEnd = slice.startSec + Math.max(0.01, slice.duration);
+    audio.ontimeupdate = () => {
+      if (!state.audioElement || state.playingId !== slice.id) return;
+      if (audio.currentTime >= sliceEnd) {
+        if (els.loopSlice.checked) {
+          audio.currentTime = slice.startSec;
+          audio.play().catch(() => setStatus("Tap again"));
+        } else {
+          audio.pause();
+          audio.ontimeupdate = null;
+          state.playingId = -1;
+          state.playbackSliceIndex = -1;
+          drawAll();
+        }
+      }
+    };
+    await audio.play();
+    return true;
+  } catch {
+    setStatus("Tap again");
+    return false;
+  }
+}
+
 async function playSlice(index) {
   const slice = state.slices[index];
   if (!slice || !state.buffer) return;
+  primeAudioNow();
   const ctx = getAudioContext();
-  if (ctx.state === "suspended") await ctx.resume();
+  await unlockAudio();
   stopPlayback();
   state.selected = index;
   if (els.granularMode.checked) {
+    if (ctx.state !== "running") {
+      setStatus("Tap again");
+      return;
+    }
     startGranularSlice(index, ctx);
+    return;
+  }
+  if (isIOS()) {
+    const didPlay = await playHtmlAudioSlice(slice);
+    if (didPlay) {
+      state.playingId = slice.id;
+      state.playbackSliceIndex = index;
+      state.playbackStartedAt = state.audioContext?.currentTime || performance.now() / 1000;
+      startPlaybackAnimation();
+      drawAll();
+      return;
+    }
+  }
+  if (ctx.state !== "running") {
+    setStatus("Tap again");
     return;
   }
   const source = ctx.createBufferSource();
@@ -807,6 +930,18 @@ function startGranularSlice(index, ctx) {
 function stopPlayback() {
   const ctx = state.audioContext;
   const stopAt = ctx ? ctx.currentTime + 0.045 : 0;
+  if (state.audioStopTimer) {
+    clearTimeout(state.audioStopTimer);
+    state.audioStopTimer = 0;
+  }
+  if (state.audioElement) {
+    try {
+      state.audioElement.pause();
+      state.audioElement.ontimeupdate = null;
+    } catch {
+      // Audio element may not be ready yet.
+    }
+  }
   if (state.outputGain && ctx) {
     try {
       state.outputGain.gain.cancelScheduledValues(ctx.currentTime);
@@ -868,7 +1003,8 @@ function startPlaybackAnimation() {
   if (state.animationFrame) return;
   const tick = () => {
     state.animationFrame = 0;
-    if (!state.source && !state.grainInterval) return;
+    const htmlAudioPlaying = state.audioElement && !state.audioElement.paused;
+    if (!state.source && !state.grainInterval && !htmlAudioPlaying) return;
     drawWaveform();
     state.animationFrame = requestAnimationFrame(tick);
   };
@@ -887,6 +1023,13 @@ els.fileInput.addEventListener("change", async (event) => {
     setStatus("Error");
   }
 });
+
+for (const target of [els.fileInput, els.fileButton].filter(Boolean)) {
+  target.addEventListener("pointerdown", primeAudioNow);
+  target.addEventListener("touchstart", primeAudioNow, { passive: true });
+  target.addEventListener("touchend", primeAudioNow, { passive: true });
+  target.addEventListener("click", primeAudioNow);
+}
 
 els.analyzeButton.addEventListener("click", async () => {
   await unlockAudio();
@@ -912,6 +1055,7 @@ els.granularMode.addEventListener("change", updateInfo);
 
 async function handleMapPointer(event, force = false) {
   event.preventDefault();
+  primeAudioNow();
   await unlockAudio();
   const pos = canvasToLocal(els.mapCanvas, event);
   const index = nearestSlice(pos);
@@ -943,7 +1087,16 @@ els.mapCanvas.addEventListener("pointerleave", () => {
 });
 
 window.addEventListener("touchstart", unlockAudio, { passive: true });
+window.addEventListener("touchend", unlockAudio, { passive: true });
 window.addEventListener("pointerdown", unlockAudio);
+window.addEventListener("touchstart", primeAudioNow, { passive: true });
+window.addEventListener("touchend", primeAudioNow, { passive: true });
+window.addEventListener("pointerdown", primeAudioNow);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    unlockAudio();
+  }
+});
 
 window.addEventListener("resize", drawAll);
 updateInfo();
