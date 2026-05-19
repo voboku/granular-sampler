@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Audio Map</title>
+    <link rel="stylesheet" href="styles.css?v=20260519-loop-fix-01" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar" aria-label="Audio controls">
+        <div class="transport">
+          <label class="file-button">
+            <input id="fileInput" type="file" accept="audio/*" />
+            <span>Load</span>
+          </label>
+          <button id="analyzeButton" type="button" disabled>Chop</button>
+          <button id="stopButton" type="button" disabled aria-label="Stop">■</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="stage">
+          <div class="wave-wrap">
+            <canvas id="waveCanvas" aria-label="Waveform"></canvas>
+          </div>
+
+          <div class="map-wrap">
+            <canvas id="mapCanvas" aria-label="Similarity map"></canvas>
+            <div class="map-info" aria-label="Map information">
+              <span>Info</span>
+              <strong id="infoChops">0 / 1000</strong>
+              <span>Duration</span>
+              <strong id="infoDuration">--</strong>
+              <span>Mode</span>
+              <strong id="infoMode">Normal</strong>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel controls" aria-label="Chop settings">
+          <div class="meter">
+            <span id="fileName"></span>
+            <strong id="statusText"></strong>
+          </div>
+
+          <div class="control-group">
+            <label for="targetCount">CHOPS</label>
+            <div class="range-row">
+              <input id="targetCount" type="range" min="32" max="1000" step="1" value="1000" />
+              <output id="targetCountValue">1000</output>
+            </div>
+          </div>
+
+          <label class="switch">
+            <input id="granularMode" type="checkbox" />
+            <span>Granular</span>
+          </label>
+
+          <div class="control-group">
+            <label for="macroAmount">MACRO</label>
+            <div class="range-row">
+              <input id="macroAmount" type="range" min="0" max="100" step="1" value="45" />
+              <output id="macroAmountValue">45</output>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label for="stretchAmount">STRETCH</label>
+            <div class="range-row">
+              <input id="stretchAmount" type="range" min="0" max="100" step="1" value="55" />
+              <output id="stretchAmountValue">55</output>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label for="scanAmount">SCAN</label>
+            <div class="range-row">
+              <input id="scanAmount" type="range" min="0" max="100" step="1" value="38" />
+              <output id="scanAmountValue">38</output>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label for="pitchSpread">PITCH SPREAD</label>
+            <div class="range-row">
+              <input id="pitchSpread" type="range" min="0" max="100" step="1" value="35" />
+              <output id="pitchSpreadValue">35</output>
+            </div>
+          </div>
+
+          <label class="switch">
+            <input id="freezeMode" type="checkbox" />
+            <span>Freeze</span>
+          </label>
+
+          <div class="control-group">
+            <label for="toneAmount">TONE</label>
+            <div class="range-row">
+              <input id="toneAmount" type="range" min="0" max="100" step="1" value="42" />
+              <output id="toneAmountValue">42</output>
+            </div>
+          </div>
+
+          <label class="switch">
+            <input id="loopSlice" type="checkbox" />
+            <span>Loop</span>
+          </label>
+
+          <div class="stats">
+            <div><span>Duration</span><strong id="durationStat">--</strong></div>
+            <div><span>Chops</span><strong id="chopStat">0</strong></div>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="app.js?v=20260519-loop-fix-01"></script>
+  </body>
+</html>
