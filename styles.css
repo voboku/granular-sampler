@@ -267,7 +267,7 @@ button:disabled {
 
 .stage {
   display: grid;
-  grid-template-rows: 230px minmax(520px, 62vh);
+  grid-template-rows: 260px minmax(520px, 62vh);
   gap: 14px;
   min-width: 0;
 }
@@ -317,7 +317,7 @@ button:disabled {
 }
 
 .wave-wrap {
-  min-height: 230px;
+  min-height: 260px;
   padding: 24px 18px 18px;
   background:
     linear-gradient(180deg, rgba(255, 247, 216, 0.18), rgba(231, 220, 192, 0.22)),
@@ -331,7 +331,7 @@ button:disabled {
 .map-wrap {
   min-height: 520px;
   padding: 18px;
-  touch-action: pan-y;
+  touch-action: pan-y pinch-zoom;
 }
 
 .map-wrap::before {
@@ -442,9 +442,11 @@ input[type="range"] {
   appearance: none;
   -webkit-appearance: none;
   width: 100%;
-  height: 26px;
+  height: 32px;
   background: transparent;
   cursor: pointer;
+  touch-action: pan-x;
+  contain: layout paint;
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
@@ -580,12 +582,17 @@ output {
 }
 
 .control-tone {
-  grid-column: 4 / 7;
+  grid-column: 5 / 7;
   grid-row: 3;
 }
 
 .control-pitch {
-  grid-column: 1 / 4;
+  grid-column: 1 / 3;
+  grid-row: 3;
+}
+
+.control-sample-gain {
+  grid-column: 3 / 5;
   grid-row: 3;
 }
 
@@ -604,9 +611,44 @@ canvas {
 }
 
 .wave-wrap canvas {
-  inset: 24px 18px 18px;
+  inset: 24px 18px 68px;
   width: calc(100% - 36px);
-  height: calc(100% - 42px);
+  height: calc(100% - 92px);
+}
+
+.sample-controls {
+  position: absolute;
+  right: 18px;
+  bottom: 12px;
+  left: 18px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(139, 109, 63, 0.12);
+}
+
+.sample-control {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 10px;
+}
+
+.sample-control label {
+  color: var(--text-soft);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+}
+
+.sample-control input[type="range"] {
+  height: 28px;
+}
+
+.sample-control output {
+  color: var(--text-soft);
 }
 
 .map-wrap canvas {
@@ -616,7 +658,7 @@ canvas {
 }
 
 #mapCanvas {
-  touch-action: pan-y;
+  touch-action: pan-y pinch-zoom;
 }
 
 @media (max-width: 760px) {
@@ -636,11 +678,11 @@ canvas {
   }
 
   .stage {
-    grid-template-rows: 190px minmax(440px, 62vh);
+    grid-template-rows: 232px minmax(440px, 62vh);
   }
 
   .wave-wrap {
-    min-height: 190px;
+    min-height: 232px;
     padding: 18px 12px 12px;
   }
 
@@ -650,9 +692,23 @@ canvas {
   }
 
   .wave-wrap canvas {
-    inset: 18px 12px 12px;
+    inset: 18px 12px 82px;
     width: calc(100% - 24px);
-    height: calc(100% - 30px);
+    height: calc(100% - 100px);
+  }
+
+  .sample-controls {
+    right: 12px;
+    bottom: 10px;
+    left: 12px;
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding-top: 8px;
+  }
+
+  .sample-control {
+    grid-template-columns: 46px minmax(0, 1fr) 30px;
+    gap: 8px;
   }
 
   .map-wrap canvas {
@@ -707,18 +763,23 @@ canvas {
   }
 
   .control-pitch {
-    grid-column: 1 / 3;
+    grid-column: 1;
+    grid-row: 6;
+  }
+
+  .control-sample-gain {
+    grid-column: 2;
     grid-row: 6;
   }
 
   .meter {
     grid-column: 1;
-    grid-row: 7;
+    grid-row: 8;
   }
 
   .stats {
     grid-column: 2;
-    grid-row: 7;
+    grid-row: 8;
     grid-template-columns: 1fr;
     gap: 0;
   }

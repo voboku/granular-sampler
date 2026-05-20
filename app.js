@@ -20,6 +20,7 @@ const state = {
   outputGain: null,
   outputFilter: null,
   outputCompressor: null,
+  outputMaster: null,
   audioElement: null,
   audioStopTimer: 0,
   audioUrl: "",
@@ -47,6 +48,8 @@ const state = {
   traces: [],
   lastTriggerAt: 0,
   lastTriggerIndex: -1,
+  sliderActive: false,
+  sliderFrame: 0,
   mapView: { zoom: 1, panX: 0, panY: 0 },
   touchGesture: {
     lastTapAt: 0,
@@ -79,6 +82,12 @@ const els = {
   scanAmountValue: $("scanAmountValue"),
   pitchSpread: $("pitchSpread"),
   pitchSpreadValue: $("pitchSpreadValue"),
+  sampleVolume: $("sampleVolume"),
+  sampleVolumeValue: $("sampleVolumeValue"),
+  samplePitch: $("samplePitch"),
+  samplePitchValue: $("samplePitchValue"),
+  sampleGain: $("sampleGain"),
+  sampleGainValue: $("sampleGainValue"),
   freezeMode: $("freezeMode"),
   toneAmount: $("toneAmount"),
   toneAmountValue: $("toneAmountValue"),
@@ -168,6 +177,53 @@ function updateInfo() {
   if (els.infoChops) els.infoChops.textContent = `${state.slices.length} / ${total}`;
   if (els.infoDuration) els.infoDuration.textContent = state.buffer ? formatTime(state.buffer.duration) : "--";
   if (els.infoMode) els.infoMode.textContent = els.granularMode.checked ? "Granular" : "Normal";
+}
+
+function sampleGainAmount() {
+  return Number(els.sampleGain.value) / 100;
+}
+
+function sampleVolumeAmount() {
+  return Number(els.sampleVolume.value) / 100;
+}
+
+function samplePitchSemitones() {
+  return Number(els.samplePitch.value);
+}
+
+function samplePitchRatio() {
+  return 2 ** (samplePitchSemitones() / 12);
+}
+
+function updateLiveSampleControls() {
+  const volume = sampleVolumeAmount();
+  const pitch = samplePitchRatio();
+  if (state.gain && state.audioContext) {
+    const now = state.audioContext.currentTime;
+    state.gain.gain.cancelScheduledValues(now);
+    state.gain.gain.setTargetAtTime(0.78 * volume, now, 0.025);
+  }
+  if (state.source?.playbackRate && state.audioContext) {
+    const now = state.audioContext.currentTime;
+    state.source.playbackRate.cancelScheduledValues(now);
+    state.source.playbackRate.setTargetAtTime(pitch, now, 0.025);
+  }
+  if (state.audioElement && !state.audioElement.paused) {
+    state.audioElement.volume = clamp(0.95 * sampleGainAmount() * volume, 0, 1);
+    state.audioElement.playbackRate = pitch;
+  }
+}
+
+function updateMasterGain() {
+  const amount = sampleGainAmount();
+  if (state.outputMaster && state.audioContext) {
+    const now = state.audioContext.currentTime;
+    state.outputMaster.gain.cancelScheduledValues(now);
+    state.outputMaster.gain.setTargetAtTime(amount, now, 0.025);
+  }
+  if (state.audioElement && !state.audioElement.paused) {
+    state.audioElement.volume = clamp(0.95 * amount * sampleVolumeAmount(), 0, 1);
+  }
 }
 
 function formatTime(seconds) {
@@ -298,13 +354,13 @@ function connectOutputRecorder() {
   }
 }
 
-function stopRecording() {
+function stopRecording(autoSave = false) {
   if (!state.mediaRecorder) return;
   state.mediaRecorder.state = "inactive";
   els.recordButton.textContent = "Record";
   els.recordButton.classList.remove("is-recording");
   setStatus("Saving");
-  handleRecordingStop();
+  handleRecordingStop(autoSave);
 }
 
 function stopRecordingStream() {
@@ -326,7 +382,7 @@ function stopRecordingStream() {
   state.recordingStream = null;
 }
 
-async function handleRecordingStop() {
+async function handleRecordingStop(autoSave = false) {
   const chunks = state.recordingChunks;
   const length = state.recordingLength;
   state.mediaRecorder = null;
@@ -343,10 +399,9 @@ async function handleRecordingStop() {
   const blob = await encodeWavAsync(samples, getAudioContext().sampleRate);
   const name = `recording-${Date.now()}.wav`;
   try {
-    const file = new File([blob], name, { type: "audio/wav" });
     storeRecordingForSave(blob, name);
-    await loadFile(file);
     setStatus(`Recorded ${formatTime(seconds)}`);
+    if (autoSave) await saveLastRecording();
   } catch (error) {
     console.error(error);
     setStatus("Record error");
@@ -776,7 +831,7 @@ function drawAll() {
 function startMapPulse() {
   if (state.mapPulseTimer) return;
   const tick = () => {
-    if (state.slices.length) safeDrawMap();
+    if (state.slices.length && !state.sliderActive) safeDrawMap();
     state.mapPulseTimer = window.setTimeout(tick, isIOS() ? 260 : 190);
   };
   state.mapPulseTimer = window.setTimeout(tick, 190);
@@ -974,37 +1029,54 @@ function drawPoint(ctx, slice, active, now = performance.now(), pinned = state.p
   ctx.fill();
   ctx.globalAlpha = 1;
   if (active) {
+    drawActivePointTag(ctx, p, radius, slice, now, pinned);
     ctx.fillStyle = themeColor("--point-hover");
     ctx.beginPath();
-    ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, radius + 1.2, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = themeColor("--playhead");
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius + 8, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p.x - 13, p.y);
-    ctx.lineTo(p.x - 7, p.y);
-    ctx.moveTo(p.x + 7, p.y);
-    ctx.lineTo(p.x + 13, p.y);
-    ctx.moveTo(p.x, p.y - 13);
-    ctx.lineTo(p.x, p.y - 7);
-    ctx.moveTo(p.x, p.y + 7);
-    ctx.lineTo(p.x, p.y + 13);
-    ctx.stroke();
-    if (pinned) {
-      ctx.strokeStyle = themeColor("--text-soft");
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y - radius - 15);
-      ctx.lineTo(p.x + radius + 9, p.y);
-      ctx.lineTo(p.x, p.y + radius + 15);
-      ctx.lineTo(p.x - radius - 9, p.y);
-      ctx.closePath();
-      ctx.stroke();
-    }
   }
+}
+
+function drawActivePointTag(ctx, p, radius, slice, now, pinned) {
+  const wobble = Math.sin(now * 0.0008 + slice.id) * 0.18;
+  const scale = pinned ? 1.12 : 1;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(wobble);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = pinned ? 0.72 : 0.58;
+  ctx.fillStyle = themeColor("--glow");
+  ctx.strokeStyle = themeColor("--text-soft");
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+  ctx.moveTo(-radius - 12, -radius - 5);
+  ctx.lineTo(-radius - 1, -radius - 14);
+  ctx.lineTo(radius + 13, -radius - 7);
+  ctx.lineTo(radius + 10, radius + 11);
+  ctx.lineTo(-radius - 6, radius + 15);
+  ctx.lineTo(-radius - 15, radius + 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = pinned ? 0.88 : 0.66;
+  ctx.stroke();
+
+  ctx.globalAlpha = pinned ? 0.75 : 0.46;
+  ctx.beginPath();
+  ctx.moveTo(-radius - 5, -radius - 1);
+  ctx.lineTo(radius + 7, radius + 5);
+  ctx.moveTo(-radius + 2, radius + 9);
+  ctx.lineTo(radius + 9, -radius - 2);
+  ctx.stroke();
+
+  if (pinned) {
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = themeColor("--playhead");
+    ctx.beginPath();
+    ctx.arc(radius + 11, -radius - 7, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function clusterBreath(slice, now) {
@@ -1165,7 +1237,7 @@ function getGranularParams() {
   const scanDepth = lerp(0.08, 0.96, scan) * lerp(0.85, 1.55, macro);
   const cloudWidth = lerp(0.018, 0.42, clamp(macro * 0.58 + pitch * 0.48 + freeze * 0.42, 0, 1));
   const filterHz = lerp(900, 7600, tone) * lerp(1, 0.5, macro) * (freeze ? 0.62 : 1);
-  const grainGain = lerp(0.32, 0.13, clamp(overlap / 13.5, 0, 1));
+  const grainGain = lerp(0.32, 0.13, clamp(overlap / 13.5, 0, 1)) * sampleVolumeAmount();
   return {
     cloudWidth,
     filterHz: clamp(filterHz, 650, 8500),
@@ -1173,6 +1245,7 @@ function getGranularParams() {
     grainGain,
     interval,
     macro,
+    samplePitch: samplePitchRatio(),
     pitchSpread: pitch,
     scanDepth,
     scanRate,
@@ -1183,14 +1256,17 @@ function getGranularParams() {
 }
 
 function createOutputChain(ctx) {
-  if (state.outputGain && state.outputFilter && state.outputCompressor) {
+  if (state.outputGain && state.outputFilter && state.outputCompressor && state.outputMaster) {
+    updateMasterGain();
     return { input: state.outputGain };
   }
   const input = ctx.createGain();
   const filter = ctx.createBiquadFilter();
   const compressor = ctx.createDynamicsCompressor();
+  const master = ctx.createGain();
   input.gain.setValueAtTime(0.0001, ctx.currentTime);
   input.gain.exponentialRampToValueAtTime(1.05, ctx.currentTime + 0.035);
+  master.gain.setValueAtTime(sampleGainAmount(), ctx.currentTime);
   filter.type = "lowpass";
   filter.frequency.setValueAtTime(5200, ctx.currentTime);
   filter.Q.setValueAtTime(0.42, ctx.currentTime);
@@ -1199,10 +1275,11 @@ function createOutputChain(ctx) {
   compressor.ratio.setValueAtTime(3.8, ctx.currentTime);
   compressor.attack.setValueAtTime(0.012, ctx.currentTime);
   compressor.release.setValueAtTime(0.16, ctx.currentTime);
-  input.connect(filter).connect(compressor).connect(ctx.destination);
+  input.connect(filter).connect(compressor).connect(master).connect(ctx.destination);
   state.outputGain = input;
   state.outputFilter = filter;
   state.outputCompressor = compressor;
+  state.outputMaster = master;
   connectOutputRecorder();
   return { input };
 }
@@ -1214,6 +1291,7 @@ function updateOutputTone(ctx, params) {
   state.outputFilter.frequency.setTargetAtTime(params.filterHz, now, 0.09);
   state.outputFilter.Q.setTargetAtTime(0.38 + params.tone * 0.28, now, 0.09);
   state.outputGain.gain.setTargetAtTime(1.08, now, 0.04);
+  updateMasterGain();
 }
 
 function choosePitchRatio(voice, spread) {
@@ -1252,7 +1330,8 @@ async function playHtmlAudioSlice(slice) {
     }
     audio.pause();
     audio.currentTime = slice.startSec;
-    audio.volume = 0.95;
+    audio.volume = clamp(0.95 * sampleGainAmount() * sampleVolumeAmount(), 0, 1);
+    audio.playbackRate = samplePitchRatio();
     audio.loop = false;
     const sliceEnd = slice.startSec + Math.max(0.01, slice.duration);
     audio.ontimeupdate = () => {
@@ -1319,8 +1398,9 @@ async function playSlice(index) {
   const source = ctx.createBufferSource();
   const gain = ctx.createGain();
   const output = createOutputChain(ctx);
-  gain.gain.value = 0.78;
+  gain.gain.value = 0.78 * sampleVolumeAmount();
   source.buffer = state.buffer;
+  source.playbackRate.setValueAtTime(samplePitchRatio(), ctx.currentTime);
   source.loop = els.loopSlice.checked;
   if (source.loop) {
     source.loopStart = slice.startSec;
@@ -1388,7 +1468,7 @@ function startGranularSlice(index, ctx) {
     const voice = state.grainVoice++;
     const lane = ((voice % 7) - 3) / 3;
     const offset = clamp(center + lane * latest.cloudWidth * playable, 0, playable);
-    const ratio = choosePitchRatio(voice, latest.pitchSpread);
+    const ratio = latest.samplePitch * choosePitchRatio(voice, latest.pitchSpread);
     const duration = latest.grainDuration;
     const attack = Math.min(0.08, duration * 0.28);
     const release = Math.min(0.12, duration * 0.36);
@@ -1447,9 +1527,11 @@ function stopPlayback() {
   const oldOutputGain = state.outputGain;
   const oldOutputFilter = state.outputFilter;
   const oldOutputCompressor = state.outputCompressor;
+  const oldOutputMaster = state.outputMaster;
   state.outputGain = null;
   state.outputFilter = null;
   state.outputCompressor = null;
+  state.outputMaster = null;
   if (state.source) {
     try {
       state.source.stop(stopAt);
@@ -1478,6 +1560,7 @@ function stopPlayback() {
       oldOutputGain?.disconnect();
       oldOutputFilter?.disconnect();
       oldOutputCompressor?.disconnect();
+      oldOutputMaster?.disconnect();
     } catch {
       // Nodes may already be disconnected.
     }
@@ -1528,7 +1611,7 @@ for (const target of [els.fileInput, els.fileButton].filter(Boolean)) {
 els.recordButton.addEventListener("click", async () => {
   primeAudioNow();
   if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
-    stopRecording();
+    stopRecording(true);
     return;
   }
   await startRecording();
@@ -1543,7 +1626,7 @@ els.analyzeButton.addEventListener("click", async () => {
   analyze();
 });
 els.stopButton.addEventListener("click", () => {
-  if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") stopRecording();
+  if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") stopRecording(true);
   clearPinnedSlice();
   stopPlayback();
 });
@@ -1554,11 +1637,42 @@ for (const [input, output] of [
   [els.stretchAmount, els.stretchAmountValue],
   [els.scanAmount, els.scanAmountValue],
   [els.pitchSpread, els.pitchSpreadValue],
+  [els.sampleVolume, els.sampleVolumeValue],
+  [els.samplePitch, els.samplePitchValue],
+  [els.sampleGain, els.sampleGainValue],
   [els.toneAmount, els.toneAmountValue],
 ]) {
-  input.addEventListener("input", () => {
+  input.addEventListener("pointerdown", () => {
+    state.sliderActive = true;
+  });
+  input.addEventListener("touchstart", () => {
+    state.sliderActive = true;
+  }, { passive: true });
+  input.addEventListener("pointerup", () => {
+    state.sliderActive = false;
+    safeDrawMap();
+  });
+  input.addEventListener("touchend", () => {
+    state.sliderActive = false;
+    safeDrawMap();
+  }, { passive: true });
+  input.addEventListener("change", () => {
+    state.sliderActive = false;
     output.textContent = input.value;
     updateInfo();
+    if (input === els.sampleGain) updateMasterGain();
+    if (input === els.sampleVolume || input === els.samplePitch) updateLiveSampleControls();
+    safeDrawMap();
+  });
+  input.addEventListener("input", () => {
+    if (state.sliderFrame) return;
+    state.sliderFrame = requestAnimationFrame(() => {
+      state.sliderFrame = 0;
+      output.textContent = input.value;
+      updateInfo();
+      if (input === els.sampleGain) updateMasterGain();
+      if (input === els.sampleVolume || input === els.samplePitch) updateLiveSampleControls();
+    });
   });
 }
 
@@ -1566,7 +1680,7 @@ els.granularMode.addEventListener("change", updateInfo);
 
 async function handleMapPointer(event, force = false) {
   if (isIOS() && event.pointerType === "touch") return;
-  event.preventDefault();
+  if (force) event.preventDefault();
   primeAudioNow();
   await unlockAudio();
   const pos = canvasToLocal(els.mapCanvas, event);
@@ -1598,6 +1712,7 @@ els.mapCanvas.addEventListener("pointerdown", async (event) => {
 });
 
 els.mapCanvas.addEventListener("pointermove", (event) => {
+  if (state.pinned >= 0) return;
   handleMapPointer(event);
 });
 
@@ -1700,7 +1815,7 @@ function handleIOSMapTouch(event) {
       clearLongPressTimer();
       return;
     }
-    event.preventDefault();
+    if (event.type === "touchstart") event.preventDefault();
     if (event.type === "touchstart") scheduleLongPressPin(index);
     if (event.type === "touchmove" && index !== gesture.longPressIndex) clearLongPressTimer();
     if (index !== state.hover || event.type === "touchstart") {

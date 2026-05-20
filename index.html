@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Audio Map</title>
-    <link rel="stylesheet" href="styles.css?v=20260520-save-robust-01" />
+    <link rel="stylesheet" href="styles.css?v=20260521-sample-controls-01" />
   </head>
   <body>
     <main class="shell">
@@ -73,6 +73,18 @@
         <section class="stage">
           <div class="wave-wrap">
             <canvas id="waveCanvas" aria-label="Waveform"></canvas>
+            <div class="sample-controls" aria-label="Sample controls">
+              <div class="sample-control">
+                <label for="sampleVolume">VOL</label>
+                <input id="sampleVolume" type="range" min="0" max="160" step="1" value="100" />
+                <output id="sampleVolumeValue">100</output>
+              </div>
+              <div class="sample-control">
+                <label for="samplePitch">PITCH</label>
+                <input id="samplePitch" type="range" min="-24" max="24" step="1" value="0" />
+                <output id="samplePitchValue">0</output>
+              </div>
+            </div>
           </div>
 
           <div class="map-wrap">
@@ -142,6 +154,14 @@
             </div>
           </div>
 
+          <div class="control-group control-sample-gain">
+            <label for="sampleGain">GAIN</label>
+            <div class="range-row">
+              <input id="sampleGain" type="range" min="0" max="160" step="1" value="100" />
+              <output id="sampleGainValue">100</output>
+            </div>
+          </div>
+
           <label class="switch switch-freeze">
             <input id="freezeMode" type="checkbox" />
             <span>Freeze</span>
@@ -168,6 +188,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260520-save-robust-01"></script>
+    <script src="app.js?v=20260521-sample-controls-01"></script>
   </body>
 </html>
