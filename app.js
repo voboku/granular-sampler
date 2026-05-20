@@ -7,6 +7,7 @@ const state = {
   fileName: "",
   slices: [],
   hover: -1,
+  pinned: -1,
   waveHover: -1,
   selected: -1,
   source: null,
@@ -23,12 +24,27 @@ const state = {
   audioStopTimer: 0,
   audioUrl: "",
   audioUnlocked: false,
+  mediaRecorder: null,
+  recordingChunks: [],
+  recordingInput: null,
+  recordingLength: 0,
+  recordingMaxLength: 0,
+  recordingProcessor: null,
+  recordingSilence: null,
+  recordingSource: null,
+  recordingStream: null,
+  recordingStartedAt: 0,
+  lastRecordingBlob: null,
+  lastRecordingName: "",
+  lastRecordingUrl: "",
   playingId: -1,
   playbackStartedAt: 0,
   playbackSliceIndex: -1,
   animationFrame: 0,
+  mapPulseTimer: 0,
   mapBounds: { left: 0, top: 0, width: 1, height: 1 },
   mapSize: { width: 1, height: 1 },
+  traces: [],
   lastTriggerAt: 0,
   lastTriggerIndex: -1,
   mapView: { zoom: 1, panX: 0, panY: 0 },
@@ -36,6 +52,8 @@ const state = {
     lastTapAt: 0,
     lastCenter: null,
     lastDistance: 0,
+    longPressTimer: 0,
+    longPressIndex: -1,
     pinching: false,
   },
 };
@@ -44,6 +62,8 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   fileInput: $("fileInput"),
+  recordButton: $("recordButton"),
+  saveButton: $("saveButton"),
   analyzeButton: $("analyzeButton"),
   stopButton: $("stopButton"),
   fileName: $("fileName"),
@@ -145,9 +165,9 @@ function setStatus(text) {
 
 function updateInfo() {
   const total = Number(els.targetCount.value);
-  els.infoChops.textContent = `${state.slices.length} / ${total}`;
-  els.infoDuration.textContent = state.buffer ? formatTime(state.buffer.duration) : "--";
-  els.infoMode.textContent = els.granularMode.checked ? "Granular" : "Normal";
+  if (els.infoChops) els.infoChops.textContent = `${state.slices.length} / ${total}`;
+  if (els.infoDuration) els.infoDuration.textContent = state.buffer ? formatTime(state.buffer.duration) : "--";
+  if (els.infoMode) els.infoMode.textContent = els.granularMode.checked ? "Granular" : "Normal";
 }
 
 function formatTime(seconds) {
@@ -202,6 +222,7 @@ async function loadFile(file) {
   state.audioElement.playsInline = true;
   state.slices = [];
   state.hover = -1;
+  state.pinned = -1;
   state.waveHover = -1;
   state.selected = -1;
   els.fileName.textContent = file.name;
@@ -212,6 +233,231 @@ async function loadFile(file) {
   setStatus("Ready");
   updateInfo();
   drawAll();
+  startMapPulse();
+}
+
+async function startRecording() {
+  const ctx = getAudioContext();
+  await unlockAudio();
+  try {
+    const input = ctx.createGain();
+    const processor = ctx.createScriptProcessor(4096, 2, 1);
+    const silence = ctx.createGain();
+    silence.gain.value = 0;
+    state.recordingChunks = [];
+    state.recordingLength = 0;
+    state.recordingMaxLength = ctx.sampleRate * 90;
+    state.recordingInput = input;
+    state.recordingProcessor = processor;
+    state.recordingSilence = silence;
+    state.recordingStartedAt = performance.now();
+    state.mediaRecorder = { state: "recording" };
+    processor.onaudioprocess = (event) => {
+      if (!state.mediaRecorder || state.mediaRecorder.state !== "recording") return;
+      const frames = event.inputBuffer.length;
+      const remaining = state.recordingMaxLength - state.recordingLength;
+      if (remaining <= 0) {
+        window.setTimeout(stopRecording, 0);
+        return;
+      }
+      const writeFrames = Math.min(frames, remaining);
+      const mixed = new Float32Array(writeFrames);
+      const channels = Math.max(1, event.inputBuffer.numberOfChannels);
+      for (let channel = 0; channel < channels; channel += 1) {
+        const data = event.inputBuffer.getChannelData(channel);
+        for (let i = 0; i < writeFrames; i += 1) mixed[i] += data[i] / channels;
+      }
+      state.recordingChunks.push(mixed);
+      state.recordingLength += writeFrames;
+      if (state.recordingLength >= state.recordingMaxLength) window.setTimeout(stopRecording, 0);
+    };
+    input.connect(processor);
+    processor.connect(silence);
+    silence.connect(ctx.destination);
+    connectOutputRecorder();
+    els.recordButton.textContent = "Stop Rec";
+    els.recordButton.classList.add("is-recording");
+    setStatus("Output Rec");
+  } catch (error) {
+    console.error(error);
+    setStatus("Record error");
+    stopRecordingStream();
+  }
+}
+
+function isOutputRecording() {
+  return Boolean(state.mediaRecorder && state.mediaRecorder.state === "recording");
+}
+
+function connectOutputRecorder() {
+  if (!isOutputRecording() || !state.outputCompressor || !state.recordingInput) return;
+  try {
+    state.outputCompressor.connect(state.recordingInput);
+  } catch {
+    // The recorder may already be connected to this output chain.
+  }
+}
+
+function stopRecording() {
+  if (!state.mediaRecorder) return;
+  state.mediaRecorder.state = "inactive";
+  els.recordButton.textContent = "Record";
+  els.recordButton.classList.remove("is-recording");
+  setStatus("Saving");
+  handleRecordingStop();
+}
+
+function stopRecordingStream() {
+  try {
+    state.recordingInput?.disconnect();
+    state.recordingProcessor?.disconnect();
+    state.recordingSource?.disconnect();
+    state.recordingSilence?.disconnect();
+  } catch {
+    // Recording nodes may already be disconnected.
+  }
+  state.recordingInput = null;
+  state.recordingProcessor = null;
+  state.recordingSource = null;
+  state.recordingSilence = null;
+  if (state.recordingStream) {
+    for (const track of state.recordingStream.getTracks()) track.stop();
+  }
+  state.recordingStream = null;
+}
+
+async function handleRecordingStop() {
+  const chunks = state.recordingChunks;
+  const length = state.recordingLength;
+  state.mediaRecorder = null;
+  state.recordingChunks = [];
+  state.recordingLength = 0;
+  state.recordingMaxLength = 0;
+  stopRecordingStream();
+  if (!chunks.length || !length) {
+    setStatus("No sound");
+    return;
+  }
+  const seconds = Math.max(0.1, (performance.now() - state.recordingStartedAt) / 1000);
+  const samples = await flattenAudioChunksAsync(chunks, length);
+  const blob = await encodeWavAsync(samples, getAudioContext().sampleRate);
+  const name = `recording-${Date.now()}.wav`;
+  try {
+    const file = new File([blob], name, { type: "audio/wav" });
+    storeRecordingForSave(blob, name);
+    await loadFile(file);
+    setStatus(`Recorded ${formatTime(seconds)}`);
+  } catch (error) {
+    console.error(error);
+    setStatus("Record error");
+  }
+}
+
+function storeRecordingForSave(blob, name) {
+  if (state.lastRecordingUrl) URL.revokeObjectURL(state.lastRecordingUrl);
+  state.lastRecordingBlob = blob;
+  state.lastRecordingName = name;
+  state.lastRecordingUrl = URL.createObjectURL(blob);
+  els.saveButton.disabled = false;
+}
+
+async function saveLastRecording() {
+  if (!state.lastRecordingBlob || !state.lastRecordingUrl) {
+    setStatus("No recording");
+    return;
+  }
+  const name = state.lastRecordingName || "recording.wav";
+  const file = new File([state.lastRecordingBlob], name, { type: "audio/wav" });
+  if (window.showSaveFilePicker) {
+    try {
+      setStatus("Choose file");
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [
+          {
+            description: "WAV audio",
+            accept: { "audio/wav": [".wav"] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(state.lastRecordingBlob);
+      await writable.close();
+      setStatus("Saved");
+      return;
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error(error);
+    }
+  }
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      setStatus("Shared");
+      return;
+    } catch (error) {
+      if (error?.name !== "AbortError") console.error(error);
+    }
+  }
+  const link = document.createElement("a");
+  link.href = state.lastRecordingUrl;
+  link.download = name;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setStatus("Saving");
+  window.setTimeout(() => {
+    if (document.visibilityState === "visible") {
+      window.open(state.lastRecordingUrl, "_blank", "noopener");
+      setStatus("Opened");
+    }
+  }, 350);
+}
+
+async function flattenAudioChunksAsync(chunks, length) {
+  const output = new Float32Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+    if (offset % 262144 < chunk.length) await frame();
+  }
+  return output;
+}
+
+async function encodeWavAsync(samples, sampleRate) {
+  const bytesPerSample = 2;
+  const blockAlign = bytesPerSample;
+  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const view = new DataView(buffer);
+  writeString(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+  writeString(view, 8, "WAVE");
+  writeString(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(view, 36, "data");
+  view.setUint32(40, samples.length * bytesPerSample, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = samples[i];
+    const value = Math.max(-1, Math.min(1, sample));
+    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true);
+    offset += 2;
+    if (i > 0 && i % 131072 === 0) await frame();
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
+function writeString(view, offset, text) {
+  for (let i = 0; i < text.length; i += 1) {
+    view.setUint8(offset + i, text.charCodeAt(i));
+  }
 }
 
 function rms(data, start, end) {
@@ -483,12 +729,14 @@ async function analyze() {
     slices.push(item);
   }
 
-  embedSlices(slices);
-  state.slices = slices;
-  state.selected = slices.length ? 0 : -1;
-  els.chopStat.textContent = String(slices.length);
+  const audibleSlices = filterAudibleSlices(slices);
+  embedSlices(audibleSlices);
+  state.slices = audibleSlices;
+  state.selected = audibleSlices.length ? 0 : -1;
+  state.pinned = -1;
+  els.chopStat.textContent = String(audibleSlices.length);
   els.analyzeButton.disabled = false;
-  setStatus(`${slices.length} chops`);
+  setStatus(`${audibleSlices.length} chops`);
   updateInfo();
   drawAll();
 }
@@ -498,12 +746,48 @@ function frame() {
 }
 
 function colorFor(slice) {
-  return slice.rms < 0.018 ? themeColor("--text-soft") : themeColor("--point");
+  return themeColor("--point");
+}
+
+function filterAudibleSlices(slices) {
+  if (!slices.length) return [];
+  const rmsValues = slices.map((slice) => slice.rms);
+  const peakValues = slices.map((slice) => slice.peak);
+  const rmsGate = Math.max(0.0015, percentile(rmsValues, 0.12) * 0.72);
+  const peakGate = Math.max(0.008, percentile(peakValues, 0.1) * 0.68);
+  const audible = slices.filter((slice) => slice.rms >= rmsGate || slice.peak >= peakGate);
+  if (audible.length) {
+    audible.forEach((slice, index) => {
+      slice.id = index + 1;
+    });
+    return audible;
+  }
+  return slices.filter((slice) => slice.peak > 0.001).map((slice, index) => {
+    slice.id = index + 1;
+    return slice;
+  });
 }
 
 function drawAll() {
   drawWaveform();
-  drawMap();
+  safeDrawMap();
+}
+
+function startMapPulse() {
+  if (state.mapPulseTimer) return;
+  const tick = () => {
+    if (state.slices.length) safeDrawMap();
+    state.mapPulseTimer = window.setTimeout(tick, isIOS() ? 260 : 190);
+  };
+  state.mapPulseTimer = window.setTimeout(tick, 190);
+}
+
+function safeDrawMap() {
+  try {
+    drawMap();
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function drawWaveform() {
@@ -595,25 +879,100 @@ function drawMap() {
     return;
   }
 
+  const now = performance.now();
+  drawMapGround(ctx, width, height, now);
+  drawTraces(ctx, now);
   for (const slice of state.slices) {
     const p = pointToCanvas(slice);
     if (p.x < -12 || p.x > width + 12 || p.y < -12 || p.y > height + 12) continue;
-    drawPoint(ctx, slice, false);
+    drawPoint(ctx, slice, false, now);
   }
   const hover = state.slices[state.hover];
-  if (hover) drawPoint(ctx, hover, true);
+  if (hover) drawPoint(ctx, hover, true, now);
   const playing = state.slices[state.playbackSliceIndex];
-  if (playing && state.playbackSliceIndex !== state.hover) drawPoint(ctx, playing, true);
+  if (playing && state.playbackSliceIndex !== state.hover) drawPoint(ctx, playing, true, now);
+  const pinned = state.slices[state.pinned];
+  if (pinned && state.pinned !== state.hover && state.pinned !== state.playbackSliceIndex) drawPoint(ctx, pinned, true, now, true);
 }
 
-function drawPoint(ctx, slice, active) {
-  const p = pointToCanvas(slice);
+function drawMapGround(ctx, width, height, now) {
+  const count = Math.min(7, Math.max(3, Math.round(state.slices.length / 170)));
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.24;
+  ctx.strokeStyle = themeColor("--line");
+  for (let i = 0; i < count; i += 1) {
+    const seed = (i + 1) * 37;
+    const cx = width * (0.18 + ((seed * 17) % 61) / 100);
+    const cy = height * (0.18 + ((seed * 29) % 58) / 100);
+    const rx = width * (0.1 + ((seed * 7) % 19) / 100);
+    const ry = height * (0.08 + ((seed * 11) % 18) / 100);
+    const drift = Math.sin(now * 0.00011 + i) * 3;
+    drawOrganicLoop(ctx, cx + drift, cy - drift * 0.6, rx, ry, i * 0.9);
+  }
+
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = themeColor("--glow");
+  for (let i = 0; i < 4; i += 1) {
+    const cx = width * (0.24 + i * 0.16);
+    const cy = height * (0.34 + Math.sin(i * 1.7) * 0.18);
+    drawOrganicLoop(ctx, cx, cy, width * 0.24, height * 0.12, i * 1.4);
+  }
+  ctx.restore();
+}
+
+function drawOrganicLoop(ctx, cx, cy, rx, ry, phase) {
+  const steps = 96;
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i += 1) {
+    const t = (i / steps) * Math.PI * 2;
+    const warp = 1 + Math.sin(t * 3 + phase) * 0.07 + Math.cos(t * 5 - phase) * 0.035;
+    const x = cx + Math.cos(t) * rx * warp;
+    const y = cy + Math.sin(t) * ry * (1 + Math.cos(t * 2 + phase) * 0.06);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawTraces(ctx, now) {
+  const keep = [];
+  for (const trace of state.traces) {
+    const age = now - trace.startedAt;
+    if (age > 1400) continue;
+    const slice = state.slices[trace.index];
+    if (!slice) continue;
+    const p = pointToCanvas(slice);
+    const progress = age / 1400;
+    const radius = 10 + progress * 34;
+    ctx.strokeStyle = themeColor("--glow");
+    ctx.globalAlpha = (1 - progress) * 0.58;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    keep.push(trace);
+  }
+  ctx.globalAlpha = 1;
+  state.traces = keep;
+}
+
+function drawPoint(ctx, slice, active, now = performance.now(), pinned = state.pinned === slice.id - 1) {
+  const breath = clusterBreath(slice, now);
+  const p = livingPoint(slice, pointToCanvas(slice), breath, active);
   const viewBoost = isIOS() ? Math.min(0.9, state.mapView.zoom * 0.1) : 0;
-  const radius = (isIOS() ? 2.15 : 1.9) + viewBoost + Math.min(1.3, slice.rms * 8);
+  let radius = ((isIOS() ? 2.15 : 1.9) + viewBoost + Math.min(1.3, slice.rms * 8)) * breath.radius;
+  if (!active && state.hover >= 0) {
+    const h = pointToCanvas(state.slices[state.hover]);
+    const dist = Math.hypot(p.x - h.x, p.y - h.y);
+    if (dist < 54) radius += (1 - dist / 54) * 0.7;
+  }
+  ctx.globalAlpha = active ? 1 : breath.opacity;
   ctx.fillStyle = slice.color;
   ctx.beginPath();
   ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
   ctx.fill();
+  ctx.globalAlpha = 1;
   if (active) {
     ctx.fillStyle = themeColor("--point-hover");
     ctx.beginPath();
@@ -634,7 +993,62 @@ function drawPoint(ctx, slice, active) {
     ctx.moveTo(p.x, p.y + 7);
     ctx.lineTo(p.x, p.y + 13);
     ctx.stroke();
+    if (pinned) {
+      ctx.strokeStyle = themeColor("--text-soft");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - radius - 15);
+      ctx.lineTo(p.x + radius + 9, p.y);
+      ctx.lineTo(p.x, p.y + radius + 15);
+      ctx.lineTo(p.x - radius - 9, p.y);
+      ctx.closePath();
+      ctx.stroke();
+    }
   }
+}
+
+function clusterBreath(slice, now) {
+  const clusterPhase =
+    Math.floor(slice.x * 7) * 0.73 +
+    Math.floor(slice.y * 6) * 0.91 +
+    Math.log10(slice.centroid + 1) * 0.32 +
+    Math.log10(slice.duration + 1.01) * 0.41;
+  const localPhase = slice.id * 0.013;
+  const shared = Math.sin(now * 0.00062 + clusterPhase);
+  const local = Math.sin(now * 0.00047 + clusterPhase + localPhase);
+  const active = state.playbackSliceIndex === slice.id - 1 || state.hover === slice.id - 1;
+  const amount = active ? 1.45 : 1;
+  return {
+    offsetX: (shared * 0.24 + local * 0.06) * amount,
+    offsetY: (Math.cos(now * 0.00053 + clusterPhase) * 0.24 + local * 0.05) * amount,
+    opacity: clamp(0.92 + shared * 0.055, 0.82, 1),
+    radius: 1 + shared * 0.055 * amount,
+  };
+}
+
+function livingPoint(slice, point, breath, active) {
+  const response = nearbyResponse(slice, point);
+  const responseAmount = active ? 0.35 : 1;
+  return {
+    x: point.x + breath.offsetX + response.x * responseAmount,
+    y: point.y + breath.offsetY + response.y * responseAmount,
+  };
+}
+
+function nearbyResponse(slice, point) {
+  if (state.hover < 0 || state.hover === slice.id - 1) return { x: 0, y: 0 };
+  const active = state.slices[state.hover];
+  if (!active) return { x: 0, y: 0 };
+  const activePoint = pointToCanvas(active);
+  const dx = point.x - activePoint.x;
+  const dy = point.y - activePoint.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= 0.001 || dist > 62) return { x: 0, y: 0 };
+  const amount = (1 - dist / 62) * 0.38;
+  return {
+    x: (dx / dist) * amount,
+    y: (dy / dist) * amount,
+  };
 }
 
 function pointToCanvas(slice) {
@@ -687,7 +1101,7 @@ function resetMapView() {
   state.mapView.zoom = 1;
   state.mapView.panX = 0;
   state.mapView.panY = 0;
-  drawMap();
+  safeDrawMap();
 }
 
 function showTouchedSlice(index) {
@@ -700,6 +1114,11 @@ function showTouchedSlice(index) {
 }
 
 function restoreStatus() {
+  if (state.pinned >= 0 && state.slices[state.pinned]) {
+    const slice = state.slices[state.pinned];
+    setStatus(`Pinned #${slice.id}`);
+    return;
+  }
   if (state.slices.length) {
     setStatus(`${state.slices.length} chops`);
   } else if (state.buffer) {
@@ -707,6 +1126,27 @@ function restoreStatus() {
   } else {
     setStatus("");
   }
+}
+
+function togglePinnedSlice(index, play = true) {
+  if (index < 0 || !state.slices[index]) return;
+  if (state.pinned === index) {
+    state.pinned = -1;
+    restoreStatus();
+    safeDrawMap();
+    return;
+  }
+  state.pinned = index;
+  state.selected = index;
+  if (play) maybePlaySlice(index, true);
+  setStatus(`Pinned #${state.slices[index].id}`);
+  safeDrawMap();
+}
+
+function clearPinnedSlice() {
+  state.pinned = -1;
+  restoreStatus();
+  safeDrawMap();
 }
 
 function getGranularParams() {
@@ -763,6 +1203,7 @@ function createOutputChain(ctx) {
   state.outputGain = input;
   state.outputFilter = filter;
   state.outputCompressor = compressor;
+  connectOutputRecorder();
   return { input };
 }
 
@@ -842,10 +1283,16 @@ async function playSlice(index) {
   if (!slice || !state.buffer) return;
   primeAudioNow();
   const ctx = getAudioContext();
-  await unlockAudio();
+  try {
+    ctx.resume?.();
+  } catch {
+    // The next direct touch will retry.
+  }
   stopPlayback();
   state.selected = index;
+  addTrace(index);
   if (els.granularMode.checked) {
+    if (ctx.state !== "running") await unlockAudio();
     if (ctx.state !== "running") {
       setStatus("Tap again");
       return;
@@ -853,7 +1300,7 @@ async function playSlice(index) {
     startGranularSlice(index, ctx);
     return;
   }
-  if (isIOS()) {
+  if (isIOS() && !isOutputRecording()) {
     const didPlay = await playHtmlAudioSlice(slice);
     if (didPlay) {
       state.playingId = slice.id;
@@ -864,6 +1311,7 @@ async function playSlice(index) {
       return;
     }
   }
+  if (ctx.state !== "running") await unlockAudio();
   if (ctx.state !== "running") {
     setStatus("Tap again");
     return;
@@ -899,6 +1347,12 @@ async function playSlice(index) {
   state.playbackStartedAt = ctx.currentTime;
   startPlaybackAnimation();
   drawAll();
+}
+
+function addTrace(index) {
+  if (index < 0) return;
+  state.traces.push({ index, startedAt: performance.now() });
+  if (state.traces.length > 18) state.traces.splice(0, state.traces.length - 18);
 }
 
 function startGranularSlice(index, ctx) {
@@ -1071,11 +1525,28 @@ for (const target of [els.fileInput, els.fileButton].filter(Boolean)) {
   target.addEventListener("click", primeAudioNow);
 }
 
+els.recordButton.addEventListener("click", async () => {
+  primeAudioNow();
+  if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
+    stopRecording();
+    return;
+  }
+  await startRecording();
+});
+
+els.saveButton.addEventListener("click", () => {
+  saveLastRecording();
+});
+
 els.analyzeButton.addEventListener("click", async () => {
   await unlockAudio();
   analyze();
 });
-els.stopButton.addEventListener("click", stopPlayback);
+els.stopButton.addEventListener("click", () => {
+  if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") stopRecording();
+  clearPinnedSlice();
+  stopPlayback();
+});
 
 for (const [input, output] of [
   [els.targetCount, els.targetCountValue],
@@ -1102,11 +1573,12 @@ async function handleMapPointer(event, force = false) {
   const index = nearestSlice(pos);
   if (force || index !== state.hover) {
     state.hover = index;
-    drawMap();
-    if (index >= 0) maybePlaySlice(index, force);
-    if (index < 0 && !els.loopSlice.checked) stopPlayback();
+    safeDrawMap();
+    if (index >= 0 && (force || state.pinned < 0)) maybePlaySlice(index, force);
+    if (index < 0 && state.pinned < 0 && !els.loopSlice.checked) stopPlayback();
     showTouchedSlice(index);
   }
+  return index;
 }
 
 function maybePlaySlice(index, force = false) {
@@ -1119,9 +1591,10 @@ function maybePlaySlice(index, force = false) {
   playSlice(index);
 }
 
-els.mapCanvas.addEventListener("pointerdown", (event) => {
+els.mapCanvas.addEventListener("pointerdown", async (event) => {
   els.mapCanvas.setPointerCapture?.(event.pointerId);
-  handleMapPointer(event, true);
+  const index = await handleMapPointer(event, true);
+  if (!isIOS() && event.pointerType !== "touch" && index >= 0) togglePinnedSlice(index, false);
 });
 
 els.mapCanvas.addEventListener("pointermove", (event) => {
@@ -1130,11 +1603,11 @@ els.mapCanvas.addEventListener("pointermove", (event) => {
 
 els.mapCanvas.addEventListener("pointerleave", () => {
   state.hover = -1;
-  if (!els.loopSlice.checked) {
+  if (state.pinned < 0 && !els.loopSlice.checked) {
     stopPlayback();
   }
   restoreStatus();
-  drawMap();
+  safeDrawMap();
 });
 
 function touchPoint(touch) {
@@ -1154,11 +1627,31 @@ function touchDistance(touches) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function clearLongPressTimer() {
+  if (state.touchGesture.longPressTimer) {
+    clearTimeout(state.touchGesture.longPressTimer);
+    state.touchGesture.longPressTimer = 0;
+  }
+  state.touchGesture.longPressIndex = -1;
+}
+
+function scheduleLongPressPin(index) {
+  clearLongPressTimer();
+  if (index < 0) return;
+  state.touchGesture.longPressIndex = index;
+  state.touchGesture.longPressTimer = window.setTimeout(() => {
+    const target = state.touchGesture.longPressIndex;
+    clearLongPressTimer();
+    if (target >= 0) togglePinnedSlice(target, true);
+  }, 540);
+}
+
 function handleIOSMapTouch(event) {
   if (!isIOS()) return;
   primeAudioNow();
   const touches = event.touches;
   if (touches.length >= 2) {
+    clearLongPressTimer();
     event.preventDefault();
     const center = touchCenter(touches);
     const distance = Math.max(1, touchDistance(touches));
@@ -1183,7 +1676,7 @@ function handleIOSMapTouch(event) {
     gesture.lastCenter = center;
     gesture.lastDistance = distance;
     clampMapView();
-    drawMap();
+    safeDrawMap();
     return;
   }
 
@@ -1196,18 +1689,24 @@ function handleIOSMapTouch(event) {
     if (event.type === "touchstart" && now - gesture.lastTapAt < 280) {
       event.preventDefault();
       gesture.lastTapAt = 0;
+      clearLongPressTimer();
       resetMapView();
       return;
     }
     if (event.type === "touchstart") gesture.lastTapAt = now;
     const pos = touchPoint(touches[0]);
     const index = nearestSlice(pos, 24);
-    if (index < 0) return;
+    if (index < 0) {
+      clearLongPressTimer();
+      return;
+    }
     event.preventDefault();
+    if (event.type === "touchstart") scheduleLongPressPin(index);
+    if (event.type === "touchmove" && index !== gesture.longPressIndex) clearLongPressTimer();
     if (index !== state.hover || event.type === "touchstart") {
       state.hover = index;
-      drawMap();
-      maybePlaySlice(index, event.type === "touchstart");
+      safeDrawMap();
+      if (state.pinned < 0 || index === state.pinned) maybePlaySlice(index, event.type === "touchstart");
       showTouchedSlice(index);
     }
   }
@@ -1217,6 +1716,7 @@ els.mapCanvas.addEventListener("touchstart", handleIOSMapTouch, { passive: false
 els.mapCanvas.addEventListener("touchmove", handleIOSMapTouch, { passive: false });
 els.mapCanvas.addEventListener("touchend", (event) => {
   if (!isIOS()) return;
+  clearLongPressTimer();
   if (event.touches.length < 2) {
     state.touchGesture.pinching = false;
     state.touchGesture.lastCenter = null;
@@ -1225,6 +1725,7 @@ els.mapCanvas.addEventListener("touchend", (event) => {
 }, { passive: false });
 els.mapCanvas.addEventListener("touchcancel", (event) => {
   if (!isIOS()) return;
+  clearLongPressTimer();
   state.touchGesture.pinching = false;
   state.touchGesture.lastCenter = null;
   state.touchGesture.lastDistance = 0;

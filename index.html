@@ -4,16 +4,66 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Audio Map</title>
-    <link rel="stylesheet" href="styles.css?v=20260519-ios-audio-02" />
+    <link rel="stylesheet" href="styles.css?v=20260520-save-robust-01" />
   </head>
   <body>
     <main class="shell">
+      <svg class="line-collage" viewBox="0 0 1200 900" aria-hidden="true" focusable="false">
+        <g class="collage-soft">
+          <rect x="62" y="58" width="312" height="214" />
+          <rect x="82" y="78" width="272" height="156" />
+          <path d="M134 245 C190 226 236 230 310 248" />
+          <path d="M178 166 C226 120 284 124 320 170" />
+        </g>
+
+        <g class="collage-capsules">
+          <path d="M792 62 C784 122 782 198 796 266" />
+          <path d="M834 56 C820 130 820 210 838 282" />
+          <path d="M878 78 C860 138 860 210 884 274" />
+          <path d="M922 54 C906 138 904 230 930 312" />
+          <ellipse cx="813" cy="146" rx="17" ry="70" />
+          <ellipse cx="870" cy="182" rx="22" ry="62" />
+          <ellipse cx="918" cy="164" rx="18" ry="84" />
+        </g>
+
+        <g class="collage-topology">
+          <path d="M142 606 C218 512 374 526 454 598 C540 674 708 650 764 548 C826 438 1014 466 1080 558" />
+          <path d="M118 692 C256 582 394 624 492 700 C608 790 742 740 842 646 C926 566 1032 594 1100 670" />
+          <path d="M236 610 C286 584 342 594 374 636 C418 696 506 678 538 622" />
+          <path d="M732 610 C786 556 858 560 912 624 C956 674 1016 672 1050 634" />
+          <circle cx="346" cy="626" r="5" />
+          <circle cx="536" cy="622" r="5" />
+          <circle cx="912" cy="624" r="5" />
+        </g>
+
+        <g class="collage-shards">
+          <path d="M492 126 L532 86 L548 142 L616 116 L580 166 L642 186 L570 196 L596 252 L538 218 L500 272 L504 204 L438 224 L486 176 L426 146 Z" />
+          <path d="M648 80 C664 118 688 136 728 140 C686 152 662 174 650 214 C638 170 616 150 574 142 C616 132 640 112 648 80 Z" />
+          <path d="M568 294 C632 254 706 256 762 318" />
+          <path d="M552 320 C622 294 704 304 780 354" />
+        </g>
+      </svg>
+
       <section class="topbar" aria-label="Audio controls">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 120 120" focusable="false">
+            <g>
+              <path d="M55 12 L72 22 L60 43 L43 33 Z" />
+              <path d="M87 28 L104 39 L89 58 L72 47 Z" />
+              <path d="M94 72 L84 91 L63 82 L73 63 Z" />
+              <path d="M48 91 L30 80 L44 60 L62 72 Z" />
+              <path d="M19 50 L30 31 L51 40 L39 59 Z" />
+              <path d="M61 47 L73 62 L59 75 L47 60 Z" />
+            </g>
+          </svg>
+        </div>
         <div class="transport">
           <label class="file-button">
             <input id="fileInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.aif,.aiff,.flac,.ogg" />
             <span>Load</span>
           </label>
+          <button id="recordButton" type="button">Record</button>
+          <button id="saveButton" type="button" disabled>Save</button>
           <button id="analyzeButton" type="button" disabled>Chop</button>
           <button id="stopButton" type="button" disabled aria-label="Stop">■</button>
         </div>
@@ -26,15 +76,18 @@
           </div>
 
           <div class="map-wrap">
+            <svg class="plate-drawing map-drawing" viewBox="0 0 1000 720" aria-hidden="true" focusable="false">
+              <path d="M62 432 C142 278 312 238 452 320 C554 380 644 358 728 262 C820 158 938 210 972 366" />
+              <path d="M96 526 C226 400 378 422 506 536 C632 648 792 596 904 472" />
+              <path d="M168 210 C286 130 406 166 480 248 C546 320 638 314 716 230" />
+              <path d="M196 404 C264 356 342 368 394 426 C456 496 558 486 616 410" />
+              <path d="M704 418 C764 348 850 358 902 434" />
+              <path d="M742 88 L790 44 L806 112 L882 82 L842 146 L912 176 L824 184 L858 252 L786 210 L738 278 L746 194 L666 222 L724 158 L654 116 Z" />
+              <circle cx="394" cy="426" r="7" />
+              <circle cx="616" cy="410" r="7" />
+              <circle cx="902" cy="434" r="7" />
+            </svg>
             <canvas id="mapCanvas" aria-label="Similarity map"></canvas>
-            <div class="map-info" aria-label="Map information">
-              <span>Info</span>
-              <strong id="infoChops">0 / 1000</strong>
-              <span>Duration</span>
-              <strong id="infoDuration">--</strong>
-              <span>Mode</span>
-              <strong id="infoMode">Normal</strong>
-            </div>
           </div>
         </section>
 
@@ -44,7 +97,7 @@
             <strong id="statusText"></strong>
           </div>
 
-          <div class="control-group">
+          <div class="control-group control-chops">
             <label for="targetCount">CHOPS</label>
             <div class="range-row">
               <input id="targetCount" type="range" min="32" max="1000" step="1" value="1000" />
@@ -52,12 +105,12 @@
             </div>
           </div>
 
-          <label class="switch">
+          <label class="switch switch-granular">
             <input id="granularMode" type="checkbox" />
             <span>Granular</span>
           </label>
 
-          <div class="control-group">
+          <div class="control-group control-macro">
             <label for="macroAmount">MACRO</label>
             <div class="range-row">
               <input id="macroAmount" type="range" min="0" max="100" step="1" value="45" />
@@ -65,7 +118,7 @@
             </div>
           </div>
 
-          <div class="control-group">
+          <div class="control-group control-stretch">
             <label for="stretchAmount">STRETCH</label>
             <div class="range-row">
               <input id="stretchAmount" type="range" min="0" max="100" step="1" value="55" />
@@ -73,7 +126,7 @@
             </div>
           </div>
 
-          <div class="control-group">
+          <div class="control-group control-scan">
             <label for="scanAmount">SCAN</label>
             <div class="range-row">
               <input id="scanAmount" type="range" min="0" max="100" step="1" value="38" />
@@ -81,7 +134,7 @@
             </div>
           </div>
 
-          <div class="control-group">
+          <div class="control-group control-pitch">
             <label for="pitchSpread">PITCH SPREAD</label>
             <div class="range-row">
               <input id="pitchSpread" type="range" min="0" max="100" step="1" value="35" />
@@ -89,12 +142,12 @@
             </div>
           </div>
 
-          <label class="switch">
+          <label class="switch switch-freeze">
             <input id="freezeMode" type="checkbox" />
             <span>Freeze</span>
           </label>
 
-          <div class="control-group">
+          <div class="control-group control-tone">
             <label for="toneAmount">TONE</label>
             <div class="range-row">
               <input id="toneAmount" type="range" min="0" max="100" step="1" value="42" />
@@ -102,7 +155,7 @@
             </div>
           </div>
 
-          <label class="switch">
+          <label class="switch switch-loop">
             <input id="loopSlice" type="checkbox" />
             <span>Loop</span>
           </label>
@@ -115,6 +168,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260519-ios-audio-02"></script>
+    <script src="app.js?v=20260520-save-robust-01"></script>
   </body>
 </html>
